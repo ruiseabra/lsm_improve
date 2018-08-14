@@ -26,7 +26,7 @@ temps <- tibble(
 
 # load robolimpet data
 ref <- tibble(
-  path = dir("TEST_robolimpet_data/", full.names = TRUE),
+  path = dir("data/robolimpet/", full.names = TRUE),
   l    = basename(path) %>% str_sub(1,1),
   nm   = H$nm[match(l, H$l)])
 ref$t <- as.list(rep(NA, nrow(ref)))
@@ -87,9 +87,9 @@ t <- list()
 for (i in 1:nrow(temps)) {
   t[[i]] <- tibble(
     nm   = temps$nm[i],
-    time = temps$ref[[i]]$time, 
-    ref  = temps$ref[[i]]$ref_1, 
-    lsmR = temps$t.r[[i]]$l1, 
+    time = temps$ref[[i]]$time,
+    ref  = temps$ref[[i]]$ref_1,
+    lsmR = temps$t.r[[i]]$l1,
     lsmF = temps$t.f[[i]]$l1)
 }
 t <- do.call(rbind, t)
@@ -118,4 +118,4 @@ ggplot(tt) +
   geom_hline(aes(yintercept = REF_mean)) +
   geom_line(aes(time, lsm, color = type)) +
   xlab("") + ylab("") + ggtitle(str_c("bias all: ", bias_all, " / bias here: ", bias_here))
-  
+
