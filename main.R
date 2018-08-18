@@ -1,78 +1,114 @@
 Sys.setenv(TZ = "UTC")
 options(digits = 10)
-pkgs <- c("tidyverse", "lubridate", "stringr", "xts", "dygraphs", "scales", "shiny")
+pkgs <- c("tidyverse", "lubridate", "stringr", "xts", "dygraphs", "scales", "shiny", "raster", "insol")
 for (p in pkgs) suppressPackageStartupMessages(library(p, character.only = TRUE))
 
-T0  <- "2017-10-10 00"
-T1  <- "2018-03-01 00"
-# T1  <- "2017-12-01 00" # must fix how NRUN is computed
-DT  <- 1800
-LOC <- list(lon = -8.876, lat = 41.839, height = -20)
-
+# load general functions ####
 source("functions.R")
 
-LSM <- str_c(dirname(getwd()), "/lsm_r_v11/")
-# load parameters
-for (f in dir(LSM, pattern = "PARAMS.", full.names = TRUE)) source(f)
-# load functions
-for (f in dir(LSM, pattern = "FUNS.", full.names = TRUE)) source(f)
+# MAKE saved files "remember" the aggregation factor, so that both raster loading and more importantly adjusted latlon for loggers only has to be done once
 
-# robolimpet data ####
-ENV   <- str_c(dirname(getwd()), "/io/")
-paths <- dir(str_c(ENV, "robolimpet/"), full.names = TRUE)
-ref <- get.ref(T0, T1, DT, paths)
+# ADD evaluating stats to the dygraph to assess log vs lsm performance
 
-# water temperature ####
-# ... from loggers
-wat <- extract.water(LOC, T0, T1, DT, ref[, grepl("msu", colnames(ref))])
+fn <- "lsm.RData"
+if (file.exists(fn)) {
+	load(fn)
+}else{
+	ENV <- str_c(dirname(getwd()), "/io/")
 
-# load weather data ####
-w <- forcing.data(ENV)
-# replace sst from sat by sst from logger data
-w$sst <- approx(time(wat), as.numeric(wat$sst), time(w), method = "linear", rule = 2)$y %>%
-	"+"(273.15) %>%
-	round(2)
-# adjust raw shortwave data according to radiation model
+	### verificar times locais e utc (quando 1 e qd outro)
+	# set main run params ####
+	T0  <- "2017-10-10 00"
+	T1  <- "2018-03-01 00"
+	T1  <- "2017-12-01 00"
+	DT  <- 1800
+	LOC <- list(lon = -8.876, lat = 41.839)
+	aggregFACT <- 8
 
 
-# run lsm ####
-t <- run.lsm_r_v11()
+	# load lsm functions ####
+	LSM <- str_c(dirname(getwd()), "/lsm_r_v11/")
+	# load parameters
+	for (f in dir(LSM, pattern = "PARAMS.", full.names = TRUE)) source(f)
+	# load functions
+	for (f in dir(LSM, pattern = "FUNS.", full.names = TRUE)) source(f)
+
+	# load 3d model rasters ####
+	r <- load.rasters(ENV, aggregFACT = aggregFACT)
+
+	# logger data ####
+	dat <- get.loggers(T0, T1, DT, ENV)
+
+	# water temperature ####
+	# ... from loggers
+	ref <- filter(dat, lvl == "m")$log %>% do.call(merge, .)
+	wat <- extract.water(LOC, T0, T1, DT, ref)
+
+	# load weather data ####
+	w <- forcing.data(ENV)
+	# replace sst from sat by sst from logger data
+	w$sst <- approx(time(wat), as.numeric(wat$sst), time(w), method = "linear", rule = 2)$y %>%
+		"+"(273.15) %>%
+		round(2)
+
+	# adjust sw & lw fields ####
+	# raw sw and lw data are modified according to radiation model
+	rad <- compute.rad()
+
+	dat$sw <- dat$lw <- dat$log
+	for (i in 1:nrow(dat)) {
+		dat$sw[[i]] <- rad$sw[,i]
+		dat$lw[[i]] <- rad$lw[,i]
+	}
+
+	# run lsm ####
+	dat$lsm <- list.lsm.run(dat)
+
+	# save environment ####
+	save.image(file = "lsm.RData")
+}
 
 # prepare data ####
 # ... for shiny
-out  <- cbind(t, ref)
+# tskin = 0 (aka 'l0'), l1 = 1, ..., l15 = 15
+layer <- 1
+
+lsm <- map(dat$lsm, ~.x[,layer + 1]) %>% do.call(merge, .)
+colnames(lsm) <- str_c(dat$micro, "_lsm")
+
+log <- do.call(merge, dat$log)
+colnames(log) <- str_c(dat$micro, "_log")
+
+out  <- cbind(lsm, log)
 fixed.ylim <- range(out)
-W <- apply(w, 2, function(x) rescale(x, fixed.ylim))
+W <- apply(w, 2, function(x) rescale(x, fixed.ylim * c(1, 0.5)))
 out  <- cbind(out, W)
-col1 <- colnames(t)
-col2 <- colnames(ref)
-col3 <- colnames(w)
+colW <- colnames(w)
 
 # visualize ####
 ui <- fluidPage(
 	fluidRow(
 		column(2,
-					 checkboxInput(inputId  = "ylim", label = strong("fixed ylim"), value = FALSE),
+					 checkboxInput(inputId  = "ylim", label = strong("fixed ylim"), value = TRUE),
+					 checkboxInput(inputId  = "hi",   label = strong("highlight"),  value = FALSE),
 					 hr(),
 					 column(6,
-					 			 checkboxGroupInput(inputId  = "col1", label = strong("lsm temp"),
-					 			 									 choices  = col1, selected = col1[c(1,2,4,6)])),
+					 			 radioButtons(inputId  = "logger", label = strong("logger"),
+					 			 						 choices  = dat$micro, selected = dat$micro[1])),
 					 column(6,
-					 			 checkboxGroupInput(inputId  = "col2", label = strong("ref temp"),
-					 			 									 choices  = col2, selected = col2),
-					 			 hr(),
 					 			 radioButtons(inputId  = "col3", label = strong("env"),
-					 			 						 choices = col3, selected = col3[1]))),
+					 			 						 choices = colW, selected = colW[1]))),
 		mainPanel(
 			fluidRow(
-				column(9, dygraphOutput("plot", height = "700px")),
-				column(3,  textOutput("legendDivID")))))
+				column(10, dygraphOutput("plot", height = "700px")),
+				column(2,  textOutput("legendDivID")))))
 )
 
 server <- function(input, output) {
 	# Subset data
 	subset.data <- reactive({
-		out[, c(input$col1, input$col2, input$col3)]
+		col <- c(str_c(input$logger, "_lsm"), str_c(input$logger, "_log"))
+		out[, c(col, input$col3)]
 	})
 
 	output$plot <- renderDygraph({
@@ -86,8 +122,9 @@ server <- function(input, output) {
 				labelsDiv = "legendDivID") %>%
 			dyOptions(
 				retainDateWindow = TRUE,
-				colors = c(heat.colors(length(input$col1)), rep("darkgrey", length(input$col2)), "blue"))
-		if (input$ylim) d <- d %>% dyAxis("y", valueRange = fixed.ylim)
+				colors = c("red", "green", "blue"))
+				if (input$ylim) d <- d %>% dyAxis("y", valueRange = fixed.ylim)
+		if (input$hi) d <- d %>% dyHighlight(highlightSeriesOpts = list(strokeWidth = 2))
 		d
 	})
 }
